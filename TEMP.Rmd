@@ -1,0 +1,364 @@
+---
+title: "NYC_Taxi"
+output: html_notebook
+---
+
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(dlookr)
+library(chron)
+library(ModelMetrics)
+library(leaflet)
+data <- readr::read_csv('green_tripdata_2015-09.csv',col_names = TRUE)
+```
+
+```{r}
+data <- mutate_at(data, .vars = vars(VendorID,Store_and_fwd_flag,RateCodeID,Payment_type,Trip_type),
+                  .funs = as.factor)
+```
+
+```{r}
+diagnose(data)
+```
+Basically saying, the data looks pretty clean almost without missing value. Only one column(Ehail_fee) is empty and Trip type has 4 missing value.
+
+But actually there are more missing and uncorrect situations. Like the pickup or drop off longitude and latitude are zero. And like passenger count is 0 which means the driver miss type or not type the actual number of passenger. Or the ride has a very big travel distance but a small number of payment which is unusual.
+
+I will talke about this later when I visualize the data set.
+
+But generally, the quality of data is pretty good.
+
+```{r}
+numeric <- diagnose_numeric(data)
+numeric
+```
+
+```{r}
+category <- diagnose_category(data,top= 5)
+category %>% arrange(variables,levels)%>%select(-N)
+```
+
+do some interesting visualization
+
+First of all, there are 20592 records with a 0 distance but the situation is complex with a mean of 3.057 miles and median as 2 miles. There are some outlier with an extra large number of distance. Some long distance travel has a small amount of payment. And I will talk about this speical case later.
+
+Some zero records may cause because of the error of the GPS system and some records do travel very short or cancel after picking up.
+
+The trip distance data is like a normal distribution. I think  it is reasonable.
+
+```{r}
+data %>%ggplot(aes(x=Trip_distance))+
+  geom_histogram(bins = 30)+ scale_x_log10()+ ggtitle( "Distribution of Trip Distance")
+```
+
+It is very clear that most of the ride has only one passenger and some of the record may has 0 passenger. If I hope to train a model, I need to filter out this data.
+
+```{r}
+data %>% 
+  ggplot(aes(x=Passenger_count))+ geom_bar(stat = 'count')+ ggtitle( "Distribution of Passenger count")+scale_x_discrete(limits= c(0:9))
+data %>% 
+  ggplot(aes(x=Passenger_count))+ geom_bar(stat = 'count')+ ggtitle( "Distribution of Passenger count")+scale_x_discrete(limits= c(0:9))+scale_y_log10()
+```
+
+Total_amount has a mean of 15 dollar and a median of 11.76 dollar. 4172 Zero record and 2417 record smaller than 0. I think the amount smaller than 0 mean the transaction is speical and the company may pay extra money to customer because of complaint or the minus charge is recorded by mistake.
+
+
+```{r}
+data %>%ggplot(aes(x=Total_amount))+
+  geom_histogram(bins=200)+ ggtitle( "Distribution of Total amount")+ scale_y_log10()
+```
+
+visualize part of the pick up points in the map and there are mainly in the Manhattan island.
+```{r}
+
+sample <- sample_n(data, 1000)%>%
+  filter(Pickup_longitude !=0)%>%
+  filter(Pickup_latitude !=0)
+leaflet(data=sample) %>%
+    addTiles() %>%  # Add default OpenStreetMap map tiles
+    addCircleMarkers(~ Pickup_longitude, ~Pickup_latitude, radius = 1,
+                   color = "red", fillOpacity = 0.2)
+```
+
+
+Because of limited time, I am not going to visualize the column one by one. Let continue to third part.
+
+Find interesting trip statistics grouped by hour
+
+
+do some feature engineer at the beginning
+
+```{r}
+data <- data %>%
+  mutate(pick_day = format(lpep_pickup_datetime, "%d"))%>%
+  mutate(drop_day = format(Lpep_dropoff_datetime, "%d"))%>%
+  mutate(pick_hour = format(lpep_pickup_datetime, "%H"))%>%
+  mutate(drop_hour = format(Lpep_dropoff_datetime, "%H"))%>%
+  mutate(duration_minute = round((Lpep_dropoff_datetime-lpep_pickup_datetime)/60,digit =2))
+```
+
+There are lots of interesting finding if we group by hour and see the relationship between hour and cost or number of passenger. I pick up three most interesting features to present here.
+
+First graph we can see from 4:00 to 6:00 before dawn, the average cost per minute is higher than other time of the day. 
+Second graph we can see 15:00 to 19:00 ,the average cost per mile is higher than other time of the day.
+
+The two features are different.
+
+Average cost per mile will be highly affected by a traffic jam in New York rush hour and the cost per mile will increase because of traffic jam.At the same time ,in rush hour the travel distance is short. So considering the fare, the average price per mile increase in rush hour.
+
+Before dawn, the cost per mile is low and that happens because before dawn the trip has longer distance(may be go to the air port) so the average per mile is low. The price per minute increase because it is fast and good traffic condition.
+
+Finally, the graph 3 shows that in early midnight people tends to car taxi with their friends and in the morning ,people like to take taxi by themselves.
+
+```{r}
+hour_data <- data %>% group_by(pick_hour)%>%summarise(mean_amount = mean(Total_amount),mean_distance = mean(Trip_distance),mean_passenger = mean(Passenger_count),mean_duration= mean(duration_minute))
+hour_data <- hour_data %>%
+  mutate(amount_per_minute =  mean_amount/as.numeric(mean_duration))%>%
+  mutate(amount_per_mile =  mean_amount/mean_distance)
+head(hour_data)
+hour_data %>% ggplot(aes(x=pick_hour,y=amount_per_minute))+geom_bar(stat="identity",fill = "#FF6666")+scale_y_continuous(limits = c(0.5,1), oob = rescale_none)+ggtitle( "Relationship between pick hour and cost per minute")
+hour_data %>% ggplot(aes(x=pick_hour,y=amount_per_mile))+geom_bar(stat="identity",fill = "#669eff")+scale_y_continuous(limits = c(4,5.5), oob = rescale_none)+ggtitle( "Relationship between pick hour and cost per mile")
+
+hour_data %>% ggplot(aes(x=pick_hour,y=mean_passenger))+geom_bar(stat="identity",fill = '#3da86b')+scale_y_continuous(limits = c(1.2,1.5), oob = rescale_none)+ggtitle( "Relationship between pick hour and passenger number")
+hour_data %>% ggplot(aes(x=pick_hour,y=mean_distance))+geom_bar(stat="identity",fill = '#d136b0')+scale_y_continuous(limits = c(2,4), oob = rescale_none)+ggtitle( "Relationship between pick hour and travel distance")
+```
+
+
+
+Let's build a model to research the tips.
+Before we start, I will clean those incorrect data like 0 passenger and data without longtitude or latitude.
+Because w ehave 1494926 rows and the data set is big, I can just filter out those outliers and we still have enough data to train.
+```{r}
+data <- data %>%
+  filter(Pickup_longitude !=0)%>%
+  filter(Pickup_latitude !=0)%>%
+  filter(Passenger_count !=0 )%>%
+  filter(Trip_distance >0)%>%
+  filter(duration_minute<24*60 & duration_minute>0.1)%>%
+  filter(Tip_amount>=0)%>%
+  filter(Total_amount >0)
+count(data)
+```
+
+So After filtering there are still 1469205 rows. Outlier percentage is 1-1465865/1494926=1.94%
+
+Before we go to the model, we can do some feature engineer.
+
+The taxi drivers want to know what kind of trip yields better tips.
+
+Better tips have two concepts. One is higher tip amount for one trip. Second is higher tip rate of one trip.
+
+And I can reverse geocoding with Photon from longtitude/latitude to zip code but it takes too much time. 
+So I just put the idea here. And at the same time, I can also use weather data on 2015 Sept to join the dataset I have. I think weather may have important impact on the tip but I don't have time to do so.
+
+Because usually the speed limit in US is 70 mile/hour ,about 1 mile / minute(In Manhattan it is hard to reach the number),so I need to filter those with avg_speed larger than 1 because there are unusual.
+
+```{r}
+data<- data %>%
+  mutate(tips_rate = Tip_amount / Total_amount)%>%
+  mutate(weekend = is.weekend(lpep_pickup_datetime))%>%
+  mutate(holiday = pick_day == '07')%>%
+  mutate(duration_minute = as.numeric(duration_minute))%>%
+  mutate(avg_speed = Trip_distance/duration_minute)%>%
+  select(-Ehail_fee)%>%
+  filter(avg_speed <=1)
+```
+
+```{r}
+data %>% ggplot(aes(x=Tip_amount))+geom_histogram(bins =30)+ scale_y_log10()+scale_x_continuous(limits = c(0,20), oob = rescale_none)
+data %>% ggplot(aes(x=tips_rate))+geom_histogram(bins =30)+ scale_y_log10()+scale_x_continuous(limits = c(0,1), oob = rescale_none)
+
+```
+
+
+```{r}
+train_pre <- data %>%
+  select(Tip_amount,VendorID,Store_and_fwd_flag,RateCodeID,Pickup_longitude,Pickup_latitude,Passenger_count,Trip_distance,Fare_amount,Extra,MTA_tax,Tolls_amount,improvement_surcharge,Total_amount,Payment_type,Trip_type,pick_day,pick_hour,duration_minute,tips_rate,weekend,holiday,avg_speed)
+
+train_pre <- sample_n(train_pre, 100000)
+train_pre %>% ggplot(aes(x=Tip_amount,y=tips_rate))+geom_point()+scale_x_log10()
+```
+
+From the graph we can see Tip_amount has the strong positive correlationship with tip rate. I recall my experience when I talked with an Uber driver and he told me he cared about the tip amount rather than the tip rate. Because amount is directly and rate is calculated. 
+
+```{r}
+lapply(train_pre,class)
+
+```
+
+
+```{r}
+train_pre<-train_pre %>%
+  select(-tips_rate)%>%
+  select(-Fare_amount)%>%
+  select(-Total_amount)%>%
+  select(-Tolls_amount)%>%
+  select(-pick_day)%>%
+  mutate(pick_hour = as.numeric(pick_hour))%>%
+  mutate(midnight =  pick_hour >=0 & pick_hour <7)%>%
+  mutate(morning =  pick_hour >=7 & pick_hour <13)%>%
+  mutate(afterning = pick_hour >=13 &pick_hour <19)%>%
+  mutate(evening = pick_hour >=19)%>%
+  mutate(rush_hour = (pick_hour>=7 & pick_hour<=10) |(pick_hour>=16 & pick_hour<=19))%>%
+  select(-pick_hour)
+train <-sample_n(train_pre, 40000)
+temp <- anti_join(train_pre,train)
+validation <- sample_n(temp,5000)
+test<-anti_join(temp,validation)
+```
+
+Modelling ,the response variable is Tip_amount.Run a basic model to see what will we get.
+
+```{r}
+
+result <- lm(Tip_amount~.,data =train)
+summary(result)
+```
+It is obvious that Total_amount,Extra,Toll,MTA,improvement charge
+
+
+```{r}
+pred <- predict(result,validation)
+validation <-data.frame(validation,pred)
+mae(validation$Tip_amount,validation$pred)
+```
+mae 0.813
+
+
+PCA 
+```{r}
+data.pca <-prcomp(train_pre[,5:6], scale = TRUE)
+data_pca <-data.frame(train_pre,data.pca$x)%>%
+  select(-Pickup_longitude)%>%
+  select(-Pickup_latitude)
+
+library(recipes)
+dataTransRec <- recipe(Tip_amount~., data = data_pca) %>%
+  step_dummy(VendorID,Store_and_fwd_flag,RateCodeID,Payment_type,Trip_type,one_hot = T) %>%
+  prep(data = data_pca)
+
+TransF <- bake(dataTransRec, new_data = data_pca)%>%
+  select(-RateCodeID_X6)%>%
+  select(-RateCodeID_X99)%>%
+  select(-Payment_type_X5)
+
+train <-sample_n(TransF, 80000)
+temp <- anti_join(TransF,train)
+validation <- sample_n(temp,10000)
+test<-anti_join(temp,validation)
+```
+
+```{r}
+result <- lm(Tip_amount~.,data =train)
+summary(result)
+pred <- predict(result,validation)
+validation <-data.frame(validation,pred)
+mae(validation$Tip_amount,validation$pred)
+```
+
+0.811 After PCA and one hot encoding ,the MAE decrease.
+
+```{r}
+####before I use a large train set to train, I use small sample size to do cross validation.Here is neural network.
+a<-colnames(train)[-1]
+result_nn <- nn(
+  train, 
+  rvar = "Tip_amount", evar = list(a),
+  size =3,
+  decay =0.1,
+  type = "regression"
+)
+cv.nn(result_nn, K = 5, size = c(2,3,4,5), decay = c(0.1,0.3,0.5,0.7) )
+
+```
+Because of time I don't tune the model
+0.58 MAE without PCA
+```{r}
+##And then I use the tuned hyper parameter to train a bigger training set.
+a<-colnames(train)[-1]
+result_nn <- nn(
+  train, 
+  rvar = "Tip_amount", evar = list(a),
+  size =2,
+  decay =0.7,
+  type = "regression"
+)
+
+pred <- predict(result_nn, pred_data = validation)
+validation <- store(validation, pred, name = "pred_nn")
+validation <-validation %>%
+  mutate(pred_nn= ifelse(pred_nn>0,pred_nn,0))
+mae(validation$Tip_amount,validation$pred_nn)
+```
+
+
+```{r}
+a<-plot(result_nn, plots = "olden", custom = TRUE)
+data.frame(a$data) %>%
+  arrange(desc(importance))
+  
+```
+```{r}
+library(randomForest)
+library(caret)
+library(rfUtilities)
+
+train <-sample_n(train,5000)
+
+rf.best <-best.randomForest(Tip_amount~., data = train)
+
+importance_rf1 <-importance(rf.best)
+output <- data.frame(row.names(importance_rf1),importance_rf1)
+
+
+pred <- predict(rf.best,validation)
+
+validation$pred_rf <- pred
+mae(validation$Tip_amount,validation$pred_rf)
+output%>%arrange(desc(IncNodePurity))
+```
+
+MAE is 0.518 with a very small sample training set.
+
+Because of limited time, I don't explore more using the 1 million row data and I just use a little bit and tune some hyper parameter. But the rule is similar. With more data, we will get more accurate result.
+But I can still make some conclusion here.
+
+This conclusion is based on three models' importance.
+
+The taxi drivers want to know what kind of trip yields better tips. Can you build a model for them and explain the model?
+
+First of all, some features are have multicollinearity with tips amount like Fare_amount,Total Amount and Toll amount. And of cost these features have positive influence on tips.I think every driver will know in order to get more tips, customers may need to pay a large amount of fare fee at first.
+
+Payment method -credit card has strong positive influence on tips while cash method has strong negative effect.
+
+It is reasonable because the tips was only recorded online. If one customer pay cash, it is less likely for him to pay tip online again, because he may already pay tips in cash. So the payment influence is obvious but not very useful.
+
+Duration minute and trip distance have strong positive effect and it is a little like fare amount and total amount. Because they are too obvious. 
+
+And more interesting things are here.Tips are more in afternoon and morning and less in evening. At the same time, rush hour(7-10,16-19) will increase the tips amount and extra charge for rush hour is a symbol of high tips amount.
+
+For Trip type, it is a little suprised that dispatch will have strong negative influence on tips. Drivers may need a street hail.
+
+Passenger_count of course will increase the tips.
+
+For Rate Code, Newark and Nassu or Westchester trip(long ,and may help to move luggages) will have high tips while stardard route will have a lower tips.
+
+Weekend will increase tips rate.
+
+Of course latitude and longtitude will affect tips because of the average distance difference between area or traffic situation. I just don't have time to explain today.
+
+The faster the speed, the less tips a driver will receive.
+In conclusion, the optimal situation to get high tips is :
+
+In weekend, more than one passengers call a street hail from the airport at rush hour, and he will go to a very fast place and it will be a long trip and the traffic is bad and take a lot of time.
+
+Finally ,the driver will get a large amount of tips.
+
+
+About question 5,
+Find an anomaly in the data and explain your findings.
+
+I think I have talked about some of the anomalies in data cleaning and feature engineer part.
