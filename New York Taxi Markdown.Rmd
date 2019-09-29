@@ -12,6 +12,7 @@ library(dlookr)
 library(chron)
 library(ModelMetrics)
 library(leaflet)
+library(keras)
 data <- readr::read_csv('green_tripdata_2015-09.csv',col_names = TRUE)
 ```
 
@@ -225,7 +226,7 @@ pred <- predict(result,validation)
 validation <-data.frame(validation,pred)
 mae(validation$Tip_amount,validation$pred)
 ```
-mae 0.813
+mae 0.855
 
 
 PCA 
@@ -362,3 +363,52 @@ About question 5,
 Find an anomaly in the data and explain your findings.
 
 I think I have talked about some of the anomalies in data cleaning and feature engineer part.
+
+
+
+
+```{r}
+##More about optimizing the MAE
+#Try a keras model
+Xtrain <- train %>% select(-Tip_amount)
+Xtest <- test %>% select(-Tip_amount)
+
+dimX <- dim(Xtrain)[2]
+
+Ytrain <-  train %>% select(Tip_amount)
+Ytest <- test %>% select(Tip_amount)
+
+set.seed(1235)
+model <- keras_model_sequential() %>%
+  layer_dense(units=32,activation = "relu", input_shape = dimX) %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units=64,activation = "relu") %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units=64,activation = "relu") %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units=1,activation = 'linear')
+
+
+model%>%
+  compile(loss='mae',
+          optimizer = optimizer_rmsprop(),
+          metrics=c('mae'))
+
+historyT <- model %>% fit(
+  as.matrix(Xtrain),
+  Ytrain$Tip_amount,
+  epochs = 20,
+  batch_size = 128,
+  validation_split = 0.2
+)
+
+historyT <- model %>% fit(
+  as.matrix(Xtrain),
+  Ytrain$Tip_amount,
+  epochs = 20,
+  batch_size = 128
+)
+
+
+```
+The mae is about 0.49 (Don't have enough time to train, just a basic model)
