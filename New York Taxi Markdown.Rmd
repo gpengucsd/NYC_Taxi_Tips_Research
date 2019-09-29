@@ -13,6 +13,7 @@ library(chron)
 library(ModelMetrics)
 library(leaflet)
 library(keras)
+library(radiant)
 data <- readr::read_csv('green_tripdata_2015-09.csv',col_names = TRUE)
 ```
 
